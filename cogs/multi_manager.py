@@ -113,7 +113,7 @@ class MultiManager(commands.Cog):
         self.bot = bot
         self.active_lobbies: Dict[int, LobbySession] = {}
 
-    @commands.Cog.listener()
+    # تم حذف الـ Cog listener المسبب للخطأ تماماً من هنا
     async def cog_load(self):
         logger.info("✅ MultiManager loaded successfully and tracking persistent events")
 
