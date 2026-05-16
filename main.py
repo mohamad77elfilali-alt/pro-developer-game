@@ -36,7 +36,7 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 def setup_logging():
-    """إعداد بنية تسجيل الأخطاء والبيانات (Logging)"""
+    """إعداد بنية تسجيل الأخطاء والبيانات (Logging) وتصحيح أسماء الدوال"""
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     
@@ -46,13 +46,17 @@ def setup_logging():
     # التسجيل في الكونسول ملون
     console_handler = logging.StreamHandler(sys.stdout)
     console_formatter = ColoredFormatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    console_handler.set_formatter(console_formatter)
+    
+    # تصحيح الخطأ هنا: استخدام setFormatter بدلاً من set_formatter
+    console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
     
     # الحفظ في ملف مستدار
     file_handler = RotatingFileHandler(log_dir / "bot.log", maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
-    file_handler.set_formatter(file_formatter)
+    
+    # تصحيح الخطأ هنا أيضاً لحماية بقية الكود
+    file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
     
     return logger
@@ -74,7 +78,7 @@ class GamingBot(commands.Bot):
             application_id=None,
             help_command=None
         )
-        self.db_pool: Optional[asyncpg.Pool] = None
+        self.db_pool = None
 
     async def initialize_database(self):
         """إنشاء الاتصال بقاعدة البيانات وبناء الجداول الأساسية إن لم تكن موجودة"""
@@ -92,9 +96,9 @@ class GamingBot(commands.Bot):
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS game_channels (
                         channel_id BIGINT PRIMARY KEY,
-                        guild_id BIGINT NOT EXISTS,
-                        host_id BIGINT NOT EXISTS,
-                        lobby_type VARCHAR(20) NOT EXISTS,
+                        guild_id BIGINT,
+                        host_id BIGINT,
+                        lobby_type VARCHAR(20),
                         last_activity TIMESTAMP DEFAULT NOW()
                     );
                 ''')
@@ -102,8 +106,8 @@ class GamingBot(commands.Bot):
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS active_lobbies (
                         channel_id BIGINT PRIMARY KEY,
-                        guild_id BIGINT NOT EXISTS,
-                        host_id BIGINT NOT EXISTS,
+                        guild_id BIGINT,
+                        host_id BIGINT,
                         max_players INT DEFAULT 4,
                         is_private BOOLEAN DEFAULT FALSE,
                         last_activity TIMESTAMP DEFAULT NOW()
@@ -129,16 +133,16 @@ class GamingBot(commands.Bot):
         await self.initialize_database()
         await self.load_cogs()
         
-        # استدعاء وتسجيل الـ Views الدائمة المحدثة لحل مشكلة عدم استجابة الأزرار
+        # استدعاء وتسجيل الـ Views الثابتة المحدثة لحل مشكلة عدم استجابة الأزرار
         from cogs.solo_manager import SoloGamePage1View
         from cogs.multi_manager import LobbyDashboardView, LobbySession
         
         # تسجيل أزرار السلو الدائمة
         self.add_view(SoloGamePage1View(user_id=0, channel_id=0, bot=self))
         
-        # تسجيل أزرار اللوبي الجماعي الثابتة بشكل افترافي لحفظ الـ custom_id
+        # تسجيل أزرار اللوبي الجماعي الثابتة بشكل افتراضي لحفظ الـ custom_id
         dummy_lobby = LobbySession(host_id=0, channel_id=0, guild_id=0)
-        self.add_view(LobbyDashboardView(lobby=dummy_lobby, bot=self))
+        self.add_view(LobbyDashboardView(dummy_lobby, self))
         
         # بدء مهمة تنظيف قنوات الخمول في الخلفية لتوفير الذاكرة
         self.clean_inactive_channels.start()
@@ -158,16 +162,17 @@ class GamingBot(commands.Bot):
         """مهمة دورية لحذف قنوات الألعاب المهجورة تلقائياً بعد خمول طويل لمنع امتلاء السيرفر"""
         logger.info("🧹 جاري فحص وتنظيف قنوات الألعاب الخاملة...")
         try:
-            async with self.db_pool.acquire() as conn:
-                # تدمير قنوات السلو الخاملة لأكثر من 15 دقيقة
-                records = await conn.fetch(
-                    "SELECT channel_id FROM game_channels WHERE last_activity < NOW() - INTERVAL '15 minutes'"
-                )
-                for rec in records:
-                    channel = self.get_channel(rec['channel_id'])
-                    if channel:
-                        await channel.delete(reason="تدمير ذاتي: انتهاء صلاحية الجلسة بسبب الخمول")
-                    await conn.execute("DELETE FROM game_channels WHERE channel_id = $1", rec['channel_id'])
+            if self.db_pool:
+                async with self.db_pool.acquire() as conn:
+                    # تدمير قنوات السلو الخاملة لأكثر من 15 دقيقة
+                    records = await conn.fetch(
+                        "SELECT channel_id FROM game_channels WHERE last_activity < NOW() - INTERVAL '15 minutes'"
+                    )
+                    for rec in records:
+                        channel = self.get_channel(rec['channel_id'])
+                        if channel:
+                            await channel.delete(reason="تدمير ذاتي: انتهاء صلاحية الجلسة بسبب الخمول")
+                        await conn.execute("DELETE FROM game_channels WHERE channel_id = $1", rec['channel_id'])
         except Exception as e:
             logger.error(f"Error in clean_inactive_channels task: {e}")
 
@@ -242,7 +247,6 @@ class GamingHubControlView(discord.ui.View):
         guild = interaction.guild
         user = interaction.user
         
-        # في البداية يتم إنشاؤها خاصة، ويقوم المسؤول بفتحها باستخدام زر لوحة التحكم
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
@@ -308,7 +312,7 @@ async def setup_gaming_hub(interaction: discord.Interaction):
             hub_channel = await guild.create_text_channel(
                 name="🕹️-بوابة-الألعاب",
                 category=category,
-                overwrites={guild.default_role: discord.PermissionOverwrite(send_messages=False)} # للقراءة وضغط الأزرار فقط
+                overwrites={guild.default_role: discord.PermissionOverwrite(send_messages=False)} 
             )
             
             embed = discord.Embed(
@@ -322,7 +326,6 @@ async def setup_gaming_hub(interaction: discord.Interaction):
                 ),
                 color=0x5865F2
             )
-            embed.set_image(url="https://i.imgur.com/your_neon_banner_placeholder.png") # يمكنك استبداله برابط صورة نيون إن أردت
             embed.set_footer(text="Sentinel Gaming System • تم تفعيل الأزرار الأبدية")
             
             await hub_channel.send(embed=embed, view=GamingHubControlView())
