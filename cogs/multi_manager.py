@@ -1,727 +1,1043 @@
-"""
-Multiplayer Lobby Manager - Dynamic Party & Competitive Gaming Hub
-Production-Ready | Button-Based Lobby Configuration | 10 Multiplayer Games
-"""
-
-import asyncio
-import logging
+import discord
+from discord.ext import commands
+import asyncpg
 import random
-from typing import Dict, List, Optional, Set, Tuple
+import logging
+from typing import Optional, Dict, List, Set
+import asyncio
 from datetime import datetime, timedelta
 
-import discord
-from discord import app_commands
-from discord.ext import commands, tasks
-
-logger = logging.getLogger("MultiplayerHub")
-
-# Neon color scheme
-NEON_PURPLE = 0x9D00FF
-NEON_CYAN = 0x00F0FF
-NEON_MAGENTA = 0xFF00FF
-NEON_GREEN = 0x39FF14
-NEON_ORANGE = 0xFF6600
-
-# ============================================================================
-# MULTIPLAYER GAME DATA & STATE MANAGEMENT
-# ============================================================================
+logger = logging.getLogger("GamingBot")
 
 class LobbySession:
     """Represents an active multiplayer lobby"""
     
-    def __init__(self, channel_id: int, host_id: int, guild_id: int):
-        self.channel_id = channel_id
+    def __init__(self, host_id: int, channel_id: int, guild_id: int, max_players: int = 4, is_private: bool = False):
         self.host_id = host_id
-        self.guild_id = guild_id
-        self.max_players = 4
-        self.is_private = False
-        self.invited_users: Set[int] = set()
-        self.players: List[int] = [host_id]
-        self.current_game: Optional[str] = None
-        self.game_state: Dict = {}
-        self.created_at = datetime.now()
-    
-    def add_player(self, user_id: int) -> bool:
-        """Add a player to the lobby"""
-        if len(self.players) >= self.max_players:
-            return False
-        if user_id not in self.players:
-            self.players.append(user_id)
-            return True
-        return False
-    
-    def remove_player(self, user_id: int) -> None:
-        """Remove a player from the lobby"""
-        if user_id in self.players:
-            self.players.remove(user_id)
-    
-    def is_full(self) -> bool:
-        """Check if lobby is full"""
-        return len(self.players) >= self.max_players
-    
-    def can_join(self, user_id: int) -> bool:
-        """Check if user can join the lobby"""
-        if self.is_full() and user_id != self.host_id:
-            return False
-        if self.is_private and user_id not in self.invited_users and user_id != self.host_id:
-            return False
-        return True
-
-# Global lobby tracking
-ACTIVE_LOBBIES: Dict[int, LobbySession] = {}
-
-# ============================================================================
-# MULTIPLAYER GAME FUNCTIONS
-# ============================================================================
-
-async def play_truth_or_dare() -> Tuple[str, str]:
-    """💭 Truth or Dare Game"""
-    truths = [
-        "What's your biggest fear?",
-        "What's the most embarrassing thing you've ever done?",
-        "Who do you have a crush on?",
-        "What's your guilty pleasure?",
-        "Have you ever lied to your best friend?",
-    ]
-    
-    dares = [
-        "Send a funny selfie to the group",
-        "Talk in an accent for the next 5 minutes",
-        "Do 10 pushups right now",
-        "Send an embarrassing screenshot",
-        "Do a funny dance and record it",
-    ]
-    
-    choice = random.choice(["truth", "dare"])
-    if choice == "truth":
-        return "💭 TRUTH", random.choice(truths)
-    else:
-        return "🔥 DARE", random.choice(dares)
-
-async def play_would_you_rather() -> Tuple[str, str]:
-    """🤔 Would You Rather Game"""
-    questions = [
-        ("Fly or be invisible?", "Fly", "Invisible"),
-        ("Time travel to past or future?", "Past", "Future"),
-        ("Be rich or famous?", "Rich", "Famous"),
-        ("Live in mountains or beach?", "Mountains", "Beach"),
-        ("Have super strength or super speed?", "Strength", "Speed"),
-        ("Talk to animals or speak all languages?", "Animals", "Languages"),
-        ("Teleport or time travel?", "Teleport", "Time Travel"),
-        ("Always be too hot or too cold?", "Too Hot", "Too Cold"),
-        ("Win the lottery or find true love?", "Lottery", "True Love"),
-        ("Rewind time or see the future?", "Rewind", "See Future"),
-    ]
-    
-    question, option1, option2 = random.choice(questions)
-    return question, f"{option1} or {option2}"
-
-async def play_fast_finger_quiz() -> Tuple[str, str]:
-    """🏃 Fast Finger Quiz"""
-    questions = [
-        ("How many continents?", "7"),
-        ("Capital of Japan?", "Tokyo"),
-        ("Largest planet?", "Jupiter"),
-        ("Chemical symbol for gold?", "Au"),
-        ("How many sides in a hexagon?", "6"),
-        ("Fastest land animal?", "Cheetah"),
-        ("Smallest prime number?", "2"),
-        ("How many strings on a violin?", "4"),
-    ]
-    
-    question, answer = random.choice(questions)
-    return question, answer
-
-async def play_word_wars() -> Tuple[str, str]:
-    """🔤 Word Wars (Rhyme Challenge)"""
-    words = [
-        ("BLUE", "clue"),
-        ("GAME", "fame"),
-        ("DANCE", "chance"),
-        ("LIGHT", "night"),
-        ("SOUND", "ground"),
-    ]
-    
-    word, hint = random.choice(words)
-    return f"Find a word that rhymes with {word}", hint
-
-async def play_king_of_the_hill() -> str:
-    """👑 King of the Hill - Last Player Standing"""
-    return "👑 **KING OF THE HILL**\n\nLast person standing wins! Players get eliminated one by one."
-
-async def play_quick_draw_voting() -> Tuple[str, str]:
-    """🎨 Quick Draw Voting"""
-    drawing_prompts = [
-        "A dragon",
-        "A pizza",
-        "A spaceship",
-        "A unicorn",
-        "A haunted house",
-    ]
-    
-    prompt = random.choice(drawing_prompts)
-    return prompt, "Draw this and others vote on the best!"
-
-async def play_emoji_story() -> str:
-    """🎭 Emoji Story - Build a story together"""
-    return "🎭 **EMOJI STORY**\n\nEach player sends one emoji to build a story. Funniest story wins!"
-
-async def play_trivia_deathmatch() -> Tuple[str, str, List[str]]:
-    """🧠 Trivia Deathmatch - Competitive trivia"""
-    questions = [
-        {
-            "q": "What's the capital of France?",
-            "a": "Paris",
-            "opts": ["London", "Berlin", "Paris", "Madrid"]
-        },
-        {
-            "q": "Which planet is closest to the sun?",
-            "a": "Mercury",
-            "opts": ["Venus", "Mercury", "Earth", "Mars"]
-        },
-        {
-            "q": "What is the largest ocean?",
-            "a": "Pacific",
-            "opts": ["Atlantic", "Indian", "Arctic", "Pacific"]
-        },
-        {
-            "q": "Who wrote 1984?",
-            "a": "Orwell",
-            "opts": ["Orwell", "Asimov", "Bradbury", "Clarke"]
-        },
-        {
-            "q": "What is the smallest country?",
-            "a": "Vatican City",
-            "opts": ["Monaco", "Vatican City", "Malta", "Cyprus"]
-        },
-    ]
-    
-    q = random.choice(questions)
-    return q["q"], q["a"], q["opts"]
-
-async def play_rapid_fire_riddles() -> List[Tuple[str, str]]:
-    """⚡ Rapid Fire Riddles"""
-    riddles = [
-        ("What can run but never walks?", "Water"),
-        ("I have a face but no eyes. What am I?", "Clock"),
-        ("What has hands but cannot clap?", "Clock"),
-        ("I am something people love or hate. What am I?", "Vegetables"),
-    ]
-    
-    return random.sample(riddles, 3)
-
-async def play_team_split_challenge() -> str:
-    """⚔️ Team Split Challenge"""
-    return "⚔️ **TEAM SPLIT CHALLENGE**\n\nPlayers split into teams. First team to reach 10 points wins!"
-
-# ============================================================================
-# BUTTON VIEWS FOR LOBBY CONFIGURATION
-# ============================================================================
-
-class MultiplayerLobbyView(discord.ui.View):
-    """Main button view for creating multiplayer lobbies"""
-    
-    def __init__(self, bot: commands.Bot) -> None:
-        super().__init__(timeout=None)
-        self.bot = bot
-    
-    @discord.ui.button(label="⚔️ Host Matchmaking Lobby", style=discord.ButtonStyle.blurple, custom_id="create_multiplayer_lobby")
-    async def create_lobby(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        """Create a new multiplayer lobby"""
-        try:
-            await interaction.response.defer(ephemeral=True)
-            
-            user_id = interaction.user.id
-            guild = interaction.guild
-            
-            # Create private channel
-            channel = await guild.create_text_channel(
-                name=f"lobby-{user_id}",
-                overwrites={
-                    guild.default_role: discord.PermissionOverwrite(view=False),
-                    interaction.user: discord.PermissionOverwrite(view=True),
-                    self.bot.user: discord.PermissionOverwrite(send_messages=True, manage_messages=True),
-                }
-            )
-            
-            logger.info(f"✅ Created multiplayer lobby channel: {channel.name} for user {user_id}")
-            
-            # Create lobby session
-            lobby = LobbySession(channel.id, user_id, guild.id)
-            ACTIVE_LOBBIES[channel.id] = lobby
-            
-            # Store in database
-            from main import DatabasePool
-            async with DatabasePool.pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO game_channels (guild_id, channel_id, host_id, lobby_type, max_players, is_private)
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    """,
-                    guild.id,
-                    channel.id,
-                    user_id,
-                    "multiplayer",
-                    4,
-                    False
-                )
-            
-            # Send lobby configuration panel
-            embed = discord.Embed(
-                title="⚔️ MULTIPLAYER LOBBY CONFIGURATION",
-                description=(
-                    "**Configure your custom matchmaking lobby before going public!**\n\n"
-                    "Use the buttons below to customize:\n"
-                    "• Maximum player count\n"
-                    "• Privacy settings (Public/Private)\n"
-                    "• Invite specific friends\n\n"
-                    "Once configured, click **LAUNCH LOBBY** to start!"
-                ),
-                color=NEON_CYAN
-            )
-            embed.set_footer(text="⚡ Elite Multiplayer Gaming Hub")
-            
-            view = LobbyConfigView(self.bot, channel.id, lobby)
-            
-            await channel.send(embed=embed, view=view)
-            
-            await interaction.followup.send(
-                f"✅ **Multiplayer Lobby Created!**\n\n"
-                f"📍 {channel.mention}\n\n"
-                f"Configure your lobby and start playing!",
-                ephemeral=True
-            )
-            
-            logger.info(f"✅ Multiplayer lobby fully setup in {guild.name}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error creating lobby: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
-
-
-class LobbyConfigView(discord.ui.View):
-    """View for configuring lobby settings"""
-    
-    def __init__(self, bot: commands.Bot, channel_id: int, lobby: LobbySession) -> None:
-        super().__init__(timeout=None)
-        self.bot = bot
         self.channel_id = channel_id
+        self.guild_id = guild_id
+        self.max_players = max_players
+        self.is_private = is_private
+        self.invited_users: Set[int] = set()
+        self.active_players: Set[int] = set([host_id])
+        self.created_at = datetime.now()
+        self.last_activity = datetime.now()
+        self.current_game: Optional[str] = None
+        self.game_in_progress = False
+
+class MultiGameView(discord.ui.View):
+    """Multiplayer game selection interface"""
+    
+    def __init__(self, lobby: LobbySession, bot):
+        super().__init__(timeout=None)
         self.lobby = lobby
+        self.bot = bot
     
-    @discord.ui.button(label="👥 Max Players: 4", style=discord.ButtonStyle.primary, custom_id="set_player_limit")
-    async def set_player_limit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        """Configure maximum player limit"""
-        await interaction.response.send_message(
-            "👥 Select maximum player limit:",
-            view=PlayerLimitView(self.bot, self.channel_id, self.lobby),
-            ephemeral=True
-        )
+    async def update_activity(self):
+        """Update last activity in database"""
+        try:
+            async with self.bot.db_pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE active_lobbies SET last_activity = NOW() WHERE channel_id = $1",
+                    self.lobby.channel_id
+                )
+        except Exception as e:
+            logger.error(f"❌ Failed to update activity: {e}", exc_info=True)
     
-    @discord.ui.button(label="🔓 Privacy: Public", style=discord.ButtonStyle.green, custom_id="toggle_privacy")
-    async def toggle_privacy(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        """Toggle privacy settings"""
-        if self.lobby.is_private:
-            self.lobby.is_private = False
-            button.label = "🔓 Privacy: Public"
-            button.style = discord.ButtonStyle.green
-            status = "🔓 **PUBLIC** - Anyone can join this lobby!"
-        else:
-            self.lobby.is_private = True
-            button.label = "🔒 Privacy: Private"
-            button.style = discord.ButtonStyle.red
-            status = "🔒 **PRIVATE** - Invite-only lobby"
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Verify user is in the lobby"""
+        if interaction.user.id not in self.lobby.active_players and interaction.user.id != self.lobby.host_id:
+            if self.lobby.is_private and interaction.user.id not in self.lobby.invited_users:
+                await interaction.response.send_message(
+                    "❌ You are not invited to this lobby!",
+                    ephemeral=True
+                )
+                return False
+        return True
+    
+    @discord.ui.button(label="💭 Truth or Dare", style=discord.ButtonStyle.primary, custom_id="multi_truthordare")
+    async def truth_or_dare(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Truth or Dare multiplayer game"""
+        await interaction.response.defer()
+        await self.update_activity()
+        
+        if self.lobby.game_in_progress:
+            await interaction.followup.send("❌ A game is already in progress!", ephemeral=True)
+            return
+        
+        self.lobby.current_game = "Truth or Dare"
+        self.lobby.game_in_progress = True
+        
+        truths = [
+            "What's your biggest fear?",
+            "Have you ever lied to your best friend?",
+            "What's something you've never told anyone?",
+            "What's your guilty pleasure?",
+            "If you could change one thing about yourself, what would it be?",
+            "What's the most embarrassing thing that's happened to you?",
+            "Who's your celebrity crush?",
+            "What's a habit you wish you could break?",
+            "What's your biggest insecurity?",
+            "Have you ever cheated on anything?",
+        ]
+        
+        dares = [
+            "Do your best impression of someone here",
+            "Sing a song for 30 seconds",
+            "Do 10 pushups",
+            "Speak in an accent for the next round",
+            "Send a meme to someone",
+            "Do the worm on the floor",
+            "Call a friend and sing happy birthday",
+            "Post an embarrassing selfie",
+            "Walk around the house like a penguin",
+            "Dance for 30 seconds without music",
+        ]
+        
+        players_list = list(self.lobby.active_players)
+        random.shuffle(players_list)
         
         embed = discord.Embed(
-            title="Privacy Setting Updated",
-            description=status,
-            color=NEON_GREEN if not self.lobby.is_private else NEON_ORANGE
+            title="💭 TRUTH OR DARE - GAME START",
+            description="The game has begun! Check the thread for prompts.",
+            color=0xFF1493
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed.add_field(name="👥 Players", value=f"{len(players_list)} players", inline=False)
+        embed.add_field(name="💬 Rules", value="Players take turns choosing truth or dare. No backing out!", inline=False)
         
-        # Update database
-        from main import DatabasePool
-        async with DatabasePool.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE game_channels SET is_private = $1 WHERE channel_id = $2",
-                self.lobby.is_private,
-                self.channel_id
+        await interaction.followup.send(embed=embed)
+        
+        for idx, player_id in enumerate(players_list[:4], 1):
+            await asyncio.sleep(2)
+            
+            player = self.bot.get_user(player_id)
+            choice_type = random.choice(["Truth", "Dare"])
+            
+            if choice_type == "Truth":
+                prompt = random.choice(truths)
+            else:
+                prompt = random.choice(dares)
+            
+            prompt_embed = discord.Embed(
+                title=f"💭 {choice_type.upper()} - Player {idx}",
+                description=f"{player.mention if player else f'User {player_id}'}\n\n{prompt}",
+                color=0xFF1493
             )
+            
+            await interaction.channel.send(embed=prompt_embed)
+        
+        self.lobby.game_in_progress = False
     
-    @discord.ui.button(label="➕ Invite Friends", style=discord.ButtonStyle.primary, custom_id="invite_friends")
-    async def invite_friends(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        """Invite specific friends to the lobby"""
-        await interaction.response.send_modal(InviteFriendsModal(self.bot, self.channel_id, self.lobby))
+    @discord.ui.button(label="🤔 Would You Rather", style=discord.ButtonStyle.primary, custom_id="multi_wouldyou")
+    async def would_you_rather(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Would You Rather multiplayer game"""
+        await interaction.response.defer()
+        await self.update_activity()
+        
+        if self.lobby.game_in_progress:
+            await interaction.followup.send("❌ A game is already in progress!", ephemeral=True)
+            return
+        
+        self.lobby.current_game = "Would You Rather"
+        self.lobby.game_in_progress = True
+        
+        questions = [
+            {"option1": "Fly", "option2": "Invisible"},
+            {"option1": "Never sleep again", "option2": "Always sleep 8 hours but miss events"},
+            {"option1": "Time travel to past", "option2": "Time travel to future"},
+            {"option1": "Live in a castle", "option2": "Live on a tropical island"},
+            {"option1": "Have the ability to talk to animals", "option2": "Speak all languages"},
+            {"option1": "Always be 10 minutes late", "option2": "Always be 20 minutes early"},
+            {"option1": "Have spaghetti for hair", "option2": "Have maple syrup for sweat"},
+            {"option1": "Fight one horse-sized duck", "option2": "Fight 100 duck-sized horses"},
+            {"option1": "Never use internet again", "option2": "Never eat pizza again"},
+            {"option1": "Live without music", "option2": "Live without movies"},
+        ]
+        
+        embed = discord.Embed(
+            title="🤔 WOULD YOU RATHER - GAME START",
+            description="Players will vote on various choices!",
+            color=0x00D9FF
+        )
+        embed.add_field(name="👥 Players", value=f"{len(self.lobby.active_players)} playing", inline=False)
+        
+        await interaction.followup.send(embed=embed)
+        
+        for idx, q in enumerate(questions[:5], 1):
+            await asyncio.sleep(3)
+            
+            view = WYRVotingView(q["option1"], q["option2"])
+            choice_embed = discord.Embed(
+                title=f"🤔 QUESTION {idx}/5",
+                description=f"**Would you rather:**\n\n1️⃣ {q['option1']}\n\n2️⃣ {q['option2']}",
+                color=0x00D9FF
+            )
+            
+            await interaction.channel.send(embed=choice_embed, view=view)
+        
+        self.lobby.game_in_progress = False
     
-    @discord.ui.button(label="🚀 LAUNCH LOBBY", style=discord.ButtonStyle.success, custom_id="launch_lobby")
-    async def launch_lobby(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        """Launch the configured lobby"""
+    @discord.ui.button(label="🏃 Fast Finger Quiz", style=discord.ButtonStyle.primary, custom_id="multi_fastfinger")
+    async def fast_finger_quiz(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Fast Finger Quiz multiplayer game"""
+        await interaction.response.defer()
+        await self.update_activity()
+        
+        if self.lobby.game_in_progress:
+            await interaction.followup.send("❌ A game is already in progress!", ephemeral=True)
+            return
+        
+        self.lobby.current_game = "Fast Finger Quiz"
+        self.lobby.game_in_progress = True
+        
+        questions = [
+            {"q": "What's the capital of Japan?", "correct": "Tokyo", "options": ["Tokyo", "Osaka", "Kyoto"]},
+            {"q": "What's the largest ocean?", "correct": "Pacific", "options": ["Atlantic", "Pacific", "Indian"]},
+            {"q": "Who wrote Romeo and Juliet?", "correct": "Shakespeare", "options": ["Marlowe", "Shakespeare", "Jonson"]},
+            {"q": "What's 7 × 8?", "correct": "56", "options": ["54", "56", "58"]},
+            {"q": "What's the smallest planet?", "correct": "Mercury", "options": ["Venus", "Mercury", "Mars"]},
+        ]
+        
+        embed = discord.Embed(
+            title="🏃 FAST FINGER QUIZ - START!",
+            description="Answer the questions as fast as you can!",
+            color=0xFF1493
+        )
+        embed.add_field(name="⚡ Speed", value="First correct answer wins the point!", inline=False)
+        
+        await interaction.followup.send(embed=embed)
+        
+        scores: Dict[int, int] = {pid: 0 for pid in self.lobby.active_players}
+        
+        for idx, q in enumerate(questions, 1):
+            await asyncio.sleep(2)
+            
+            random.shuffle(q["options"])
+            view = FastFingerView(q["correct"], scores)
+            
+            quiz_embed = discord.Embed(
+                title=f"❓ QUESTION {idx}",
+                description=q["q"],
+                color=0xFF1493
+            )
+            
+            for oidx, option in enumerate(q["options"], 1):
+                quiz_embed.add_field(name=f"Option {oidx}", value=option, inline=False)
+            
+            await interaction.channel.send(embed=quiz_embed, view=view)
+            await asyncio.sleep(5)
+        
+        winner_id = max(scores, key=scores.get)
+        winner = self.bot.get_user(winner_id)
+        
+        results_embed = discord.Embed(
+            title="🏆 QUIZ RESULTS",
+            description=f"Winner: {winner.mention if winner else f'User {winner_id}'} with {scores[winner_id]} points!",
+            color=0x00D9FF
+        )
+        
+        for pid, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+            user = self.bot.get_user(pid)
+            results_embed.add_field(name=user.display_name if user else f"User {pid}", value=f"{score} points", inline=False)
+        
+        await interaction.channel.send(embed=results_embed)
+        
+        self.lobby.game_in_progress = False
+    
+    @discord.ui.button(label="🔤 Word Wars", style=discord.ButtonStyle.primary, custom_id="multi_wordwars")
+    async def word_wars(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Word Wars multiplayer game"""
+        await interaction.response.defer()
+        await self.update_activity()
+        
+        if self.lobby.game_in_progress:
+            await interaction.followup.send("❌ A game is already in progress!", ephemeral=True)
+            return
+        
+        self.lobby.current_game = "Word Wars"
+        self.lobby.game_in_progress = True
+        
+        starting_words = ["GAMING", "DISCORD", "PYTHON", "AMAZING", "ELITE"]
+        current_word = random.choice(starting_words)
+        
+        embed = discord.Embed(
+            title="🔤 WORD WARS - START!",
+            description=f"Starting word: **{current_word}**\n\nEach player must find a word that rhymes!",
+            color=0x00D9FF
+        )
+        embed.add_field(name="📋 Rules", value="Players take turns finding words. No repeats allowed!", inline=False)
+        
+        await interaction.followup.send(embed=embed)
+        
+        players_list = list(self.lobby.active_players)
+        
+        for round_num in range(1, 4):
+            await asyncio.sleep(2)
+            
+            round_embed = discord.Embed(
+                title=f"🔤 ROUND {round_num}",
+                description=f"Current word: **{current_word}**",
+                color=0x00D9FF
+            )
+            round_embed.add_field(name="👥 Players", value=f"{len(players_list)} competing", inline=False)
+            
+            await interaction.channel.send(embed=round_embed)
+            
+            for player_id in players_list:
+                await asyncio.sleep(1)
+                player = self.bot.get_user(player_id)
+                player_embed = discord.Embed(
+                    title=f"🎤 {player.display_name if player else f'Player {player_id}'}'s Turn",
+                    description=f"Find a word that rhymes with **{current_word}**",
+                    color=0xFF1493
+                )
+                await interaction.channel.send(embed=player_embed)
+        
+        self.lobby.game_in_progress = False
+    
+    @discord.ui.button(label="👑 King of the Hill", style=discord.ButtonStyle.primary, custom_id="multi_kinghill")
+    async def king_of_the_hill(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """King of the Hill multiplayer game"""
+        await interaction.response.defer()
+        await self.update_activity()
+        
+        if self.lobby.game_in_progress:
+            await interaction.followup.send("❌ A game is already in progress!", ephemeral=True)
+            return
+        
+        self.lobby.current_game = "King of the Hill"
+        self.lobby.game_in_progress = True
+        
+        players_list = list(self.lobby.active_players)
+        random.shuffle(players_list)
+        
+        current_king = players_list[0]
+        challengers = players_list[1:]
+        
+        embed = discord.Embed(
+            title="👑 KING OF THE HILL - START!",
+            description="Last player standing becomes the ultimate champion!",
+            color=0xFF1493
+        )
+        king_user = self.bot.get_user(current_king)
+        embed.add_field(name="👑 Current King", value=king_user.mention if king_user else f"Player {current_king}", inline=False)
+        
+        await interaction.followup.send(embed=embed)
+        
+        round_num = 1
+        while len(challengers) > 0:
+            await asyncio.sleep(2)
+            
+            challenger = random.choice(challengers)
+            challenger_user = self.bot.get_user(challenger)
+            king_user = self.bot.get_user(current_king)
+            
+            battle_embed = discord.Embed(
+                title=f"⚔️ ROUND {round_num} - BATTLE!",
+                description=f"**{king_user.mention if king_user else f'King'}** vs **{challenger_user.mention if challenger_user else 'Challenger'}**",
+                color=0xFF1493
+            )
+            
+            await interaction.channel.send(embed=battle_embed)
+            await asyncio.sleep(2)
+            
+            winner = random.choice([current_king, challenger])
+            loser = challenger if winner == current_king else current_king
+            
+            winner_user = self.bot.get_user(winner)
+            loser_user = self.bot.get_user(loser)
+            
+            result_embed = discord.Embed(
+                title="🏆 BATTLE RESULT",
+                description=f"**{winner_user.mention if winner_user else 'Winner'}** defeats **{loser_user.mention if loser_user else 'Loser'}**!",
+                color=0x00D9FF
+            )
+            
+            await interaction.channel.send(embed=result_embed)
+            
+            if winner == current_king:
+                challengers.remove(challenger)
+            else:
+                current_king = challenger
+                challengers.remove(loser)
+                challengers.append(loser)
+            
+            round_num += 1
+        
+        final_king = self.bot.get_user(current_king)
+        final_embed = discord.Embed(
+            title="👑 CHAMPION CROWNED!",
+            description=f"**{final_king.mention if final_king else f'Player {current_king}'}** is the King of the Hill!",
+            color=0xFFD700
+        )
+        
+        await interaction.channel.send(embed=final_embed)
+        
+        self.lobby.game_in_progress = False
+    
+    @discord.ui.button(label="🎨 Quick Draw Vote", style=discord.ButtonStyle.primary, custom_id="multi_quickdraw")
+    async def quick_draw_voting(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Quick Draw Voting multiplayer game"""
+        await interaction.response.defer()
+        await self.update_activity()
+        
+        if self.lobby.game_in_progress:
+            await interaction.followup.send("❌ A game is already in progress!", ephemeral=True)
+            return
+        
+        self.lobby.current_game = "Quick Draw Vote"
+        self.lobby.game_in_progress = True
+        
+        prompts = [
+            "Draw a pizza",
+            "Draw a cat wearing sunglasses",
+            "Draw your favorite video game character",
+            "Draw a spaceship",
+            "Draw a meme",
+            "Draw your mood today",
+            "Draw a dinosaur",
+            "Draw your idea of the future",
+        ]
+        
+        embed = discord.Embed(
+            title="🎨 QUICK DRAW VOTING - START!",
+            description="Players draw, others vote for their favorite!",
+            color=0xFF1493
+        )
+        embed.add_field(name="📋 Rules", value="Everyone draws the same prompt, then votes for the best!", inline=False)
+        
+        await interaction.followup.send(embed=embed)
+        
+        for round_num, prompt in enumerate(prompts[:3], 1):
+            await asyncio.sleep(2)
+            
+            draw_embed = discord.Embed(
+                title=f"🎨 ROUND {round_num}",
+                description=f"**Prompt: {prompt}**\n\nDraw this in 2 minutes!",
+                color=0xFF1493
+            )
+            
+            await interaction.channel.send(embed=draw_embed)
+            await asyncio.sleep(120)
+            
+            players_list = list(self.lobby.active_players)
+            
+            vote_embed = discord.Embed(
+                title=f"🗳️ VOTING TIME",
+                description="Vote for the best drawing!",
+                color=0x00D9FF
+            )
+            
+            for idx, player_id in enumerate(players_list, 1):
+                player = self.bot.get_user(player_id)
+                vote_embed.add_field(name=f"Option {idx}", value=player.mention if player else f"Player {player_id}", inline=False)
+            
+            await interaction.channel.send(embed=vote_embed)
+            await asyncio.sleep(3)
+        
+        self.lobby.game_in_progress = False
+    
+    @discord.ui.button(label="🎭 Emoji Story", style=discord.ButtonStyle.primary, custom_id="multi_emojistory")
+    async def emoji_story(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Emoji Story collaborative game"""
+        await interaction.response.defer()
+        await self.update_activity()
+        
+        if self.lobby.game_in_progress:
+            await interaction.followup.send("❌ A game is already in progress!", ephemeral=True)
+            return
+        
+        self.lobby.current_game = "Emoji Story"
+        self.lobby.game_in_progress = True
+        
+        embed = discord.Embed(
+            title="🎭 EMOJI STORY - COLLABORATIVE!",
+            description="Each player adds one emoji to build a story!",
+            color=0x00D9FF
+        )
+        embed.add_field(name="📋 Rules", value="Take turns adding emojis. Create a creative narrative!", inline=False)
+        
+        await interaction.followup.send(embed=embed)
+        
+        players_list = list(self.lobby.active_players)
+        story_emojis = []
+        
+        for turn in range(len(players_list) * 2):
+            await asyncio.sleep(1)
+            
+            current_player_idx = turn % len(players_list)
+            player_id = players_list[current_player_idx]
+            player = self.bot.get_user(player_id)
+            
+            story_embed = discord.Embed(
+                title=f"🎭 TURN {turn + 1}",
+                description=f"Story so far: {' '.join(story_emojis) if story_emojis else '(No story yet)'}",
+                color=0x00D9FF
+            )
+            story_embed.add_field(
+                name=f"{player.display_name if player else f'Player {player_id}'}'s Turn",
+                value="Add an emoji!",
+                inline=False
+            )
+            
+            await interaction.channel.send(embed=story_embed)
+            
+            random_emojis = ["🎮", "💻", "🎯", "🚀", "⭐", "🔥", "💎", "🎪", "🎭", "🎨"]
+            story_emojis.append(random.choice(random_emojis))
+        
+        final_embed = discord.Embed(
+            title="🎭 FINAL STORY",
+            description=" ".join(story_emojis),
+            color=0x00D9FF
+        )
+        
+        await interaction.channel.send(embed=final_embed)
+        
+        self.lobby.game_in_progress = False
+    
+    @discord.ui.button(label="🧠 Trivia Deathmatch", style=discord.ButtonStyle.primary, custom_id="multi_triviadeath")
+    async def trivia_deathmatch(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Trivia Deathmatch competitive game"""
+        await interaction.response.defer()
+        await self.update_activity()
+        
+        if self.lobby.game_in_progress:
+            await interaction.followup.send("❌ A game is already in progress!", ephemeral=True)
+            return
+        
+        self.lobby.current_game = "Trivia Deathmatch"
+        self.lobby.game_in_progress = True
+        
+        questions = [
+            {"q": "What's the capital of France?", "correct": "Paris", "options": ["Paris", "Lyon", "Marseille"]},
+            {"q": "What is 15 × 12?", "correct": "180", "options": ["180", "160", "200"]},
+            {"q": "What's the largest planet?", "correct": "Jupiter", "options": ["Mars", "Jupiter", "Saturn"]},
+            {"q": "Who painted the Mona Lisa?", "correct": "Leonardo da Vinci", "options": ["da Vinci", "Michelangelo", "Raphael"]},
+            {"q": "What's the smallest country?", "correct": "Vatican City", "options": ["Monaco", "Vatican City", "Andorra"]},
+        ]
+        
+        embed = discord.Embed(
+            title="🧠 TRIVIA DEATHMATCH - START!",
+            description="Fastest correct answer wins the point!",
+            color=0xFF1493
+        )
+        embed.add_field(name="🏆 Rules", value="Answer correctly and quickly to score points!", inline=False)
+        
+        await interaction.followup.send(embed=embed)
+        
+        scores: Dict[int, int] = {pid: 0 for pid in self.lobby.active_players}
+        
+        for idx, q in enumerate(questions, 1):
+            await asyncio.sleep(2)
+            
+            random.shuffle(q["options"])
+            view = TriviaDeathmatchView(q["correct"], scores)
+            
+            quiz_embed = discord.Embed(
+                title=f"❓ QUESTION {idx}",
+                description=q["q"],
+                color=0xFF1493
+            )
+            
+            for oidx, option in enumerate(q["options"], 1):
+                quiz_embed.add_field(name=f"{oidx}", value=option, inline=True)
+            
+            await interaction.channel.send(embed=quiz_embed, view=view)
+            await asyncio.sleep(6)
+        
+        winner_id = max(scores, key=scores.get)
+        winner = self.bot.get_user(winner_id)
+        
+        results_embed = discord.Embed(
+            title="🏆 DEATHMATCH RESULTS",
+            description=f"Champion: {winner.mention if winner else f'Player {winner_id}'} with {scores[winner_id]} points!",
+            color=0x00D9FF
+        )
+        
+        for pid, score in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]:
+            user = self.bot.get_user(pid)
+            results_embed.add_field(name=user.display_name if user else f"Player {pid}", value=f"{score} points", inline=False)
+        
+        await interaction.channel.send(embed=results_embed)
+        
+        self.lobby.game_in_progress = False
+    
+    @discord.ui.button(label="⚡ Rapid Riddles", style=discord.ButtonStyle.primary, custom_id="multi_rapidriddles")
+    async def rapid_fire_riddles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Rapid Fire Riddles multiplayer game"""
+        await interaction.response.defer()
+        await self.update_activity()
+        
+        if self.lobby.game_in_progress:
+            await interaction.followup.send("❌ A game is already in progress!", ephemeral=True)
+            return
+        
+        self.lobby.current_game = "Rapid Riddles"
+        self.lobby.game_in_progress = True
+        
+        riddles = [
+            {"riddle": "I have cities but no houses. What am I?", "answer": "A map"},
+            {"riddle": "What has hands but cannot clap?", "answer": "A clock"},
+            {"riddle": "I'm light as a feather, yet the strongest person can't hold me. What am I?", "answer": "Your breath"},
+            {"riddle": "What can travel the world while staying in a corner?", "answer": "A stamp"},
+            {"riddle": "What has a head and a tail but no body?", "answer": "A coin"},
+        ]
+        
+        embed = discord.Embed(
+            title="⚡ RAPID FIRE RIDDLES - GO!",
+            description="Answer the riddles as fast as you can!",
+            color=0xFF1493
+        )
+        embed.add_field(name="⏱️ Speed", value="First correct answer wins the point!", inline=False)
+        
+        await interaction.followup.send(embed=embed)
+        
+        scores: Dict[int, int] = {pid: 0 for pid in self.lobby.active_players}
+        
+        for idx, r in enumerate(riddles, 1):
+            await asyncio.sleep(2)
+            
+            view = RiddleRaceView(r["answer"], scores)
+            
+            riddle_embed = discord.Embed(
+                title=f"🧩 RIDDLE {idx}",
+                description=r["riddle"],
+                color=0xFF1493
+            )
+            
+            await interaction.channel.send(embed=riddle_embed, view=view)
+            await asyncio.sleep(5)
+        
+        winner_id = max(scores, key=scores.get)
+        winner = self.bot.get_user(winner_id)
+        
+        results_embed = discord.Embed(
+            title="🏆 RIDDLE RESULTS",
+            description=f"Champion: {winner.mention if winner else f'Player {winner_id}'} with {scores[winner_id]} points!",
+            color=0x00D9FF
+        )
+        
+        for pid, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+            user = self.bot.get_user(pid)
+            results_embed.add_field(name=user.display_name if user else f"Player {pid}", value=f"{score} points", inline=False)
+        
+        await interaction.channel.send(embed=results_embed)
+        
+        self.lobby.game_in_progress = False
+    
+    @discord.ui.button(label="⚔️ Team Split", style=discord.ButtonStyle.primary, custom_id="multi_teamsplit")
+    async def team_split_challenge(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Team Split Challenge multiplayer game"""
+        await interaction.response.defer()
+        await self.update_activity()
+        
+        if self.lobby.game_in_progress:
+            await interaction.followup.send("❌ A game is already in progress!", ephemeral=True)
+            return
+        
+        self.lobby.current_game = "Team Split Challenge"
+        self.lobby.game_in_progress = True
+        
+        players_list = list(self.lobby.active_players)
+        
+        if len(players_list) < 2:
+            await interaction.followup.send("❌ Need at least 2 players!", ephemeral=True)
+            return
+        
+        random.shuffle(players_list)
+        mid = len(players_list) // 2
+        
+        team1 = players_list[:mid]
+        team2 = players_list[mid:]
+        
+        embed = discord.Embed(
+            title="⚔️ TEAM SPLIT CHALLENGE - BATTLE!",
+            description="Two teams compete head-to-head!",
+            color=0xFF1493
+        )
+        
+        team1_str = ", ".join([f"<@{pid}>" for pid in team1])
+        team2_str = ", ".join([f"<@{pid}>" for pid in team2])
+        
+        embed.add_field(name="🔴 Team 1", value=team1_str or "Solo", inline=False)
+        embed.add_field(name="🔵 Team 2", value=team2_str or "Solo", inline=False)
+        
+        await interaction.followup.send(embed=embed)
+        
+        challenges = [
+            {"challenge": "Name as many countries as you can in 30 seconds", "type": "List"},
+            {"challenge": "Answer trivia questions correctly", "type": "Trivia"},
+            {"challenge": "Rhyme with the word GAMING", "type": "Rhyme"},
+            {"challenge": "Complete the phrase: 'Discord is...'", "type": "Phrase"},
+        ]
+        
+        team_scores = {1: 0, 2: 0}
+        
+        for round_num, challenge in enumerate(challenges, 1):
+            await asyncio.sleep(2)
+            
+            round_embed = discord.Embed(
+                title=f"⚔️ ROUND {round_num}",
+                description=f"Challenge: {challenge['challenge']}",
+                color=0xFF1493
+            )
+            
+            await interaction.channel.send(embed=round_embed)
+            await asyncio.sleep(4)
+            
+            winning_team = random.choice([1, 2])
+            team_scores[winning_team] += 1
+            
+            winner_embed = discord.Embed(
+                title="🎉 ROUND WINNER",
+                description=f"Team {winning_team} scores a point!",
+                color=0x00D9FF
+            )
+            
+            await interaction.channel.send(embed=winner_embed)
+        
+        overall_winner = max(team_scores, key=team_scores.get)
+        
+        final_embed = discord.Embed(
+            title="🏆 MATCH RESULTS",
+            description=f"Team {overall_winner} wins with {team_scores[overall_winner]} points!",
+            color=0xFFD700
+        )
+        final_embed.add_field(name="Team 1 Score", value=str(team_scores[1]), inline=True)
+        final_embed.add_field(name="Team 2 Score", value=str(team_scores[2]), inline=True)
+        
+        await interaction.channel.send(embed=final_embed)
+        
+        self.lobby.game_in_progress = False
+
+class WYRVotingView(discord.ui.View):
+    """Would You Rather voting interface"""
+    
+    def __init__(self, option1: str, option2: str):
+        super().__init__(timeout=None)
+        self.option1 = option1
+        self.option2 = option2
+        self.votes1 = 0
+        self.votes2 = 0
+        self.voted_users: Set[int] = set()
+    
+    @discord.ui.button(label="1️⃣ Option 1", style=discord.ButtonStyle.primary, custom_id="wyr_option1")
+    async def vote_option1(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         
-        channel = self.bot.get_channel(self.channel_id)
-        if not channel:
-            await interaction.followup.send("❌ Channel not found", ephemeral=True)
+        if interaction.user.id in self.voted_users:
+            await interaction.followup.send("❌ You already voted!", ephemeral=True)
             return
         
-        # Send lobby info embed
-        player_list = ", ".join([f"<@{pid}>" for pid in self.lobby.players])
-        embed = discord.Embed(
-            title="⚔️ MULTIPLAYER LOBBY LAUNCHED!",
-            description=(
-                f"**Players:** {len(self.lobby.players)}/{self.lobby.max_players}\n"
-                f"{player_list}\n\n"
-                f"**Privacy:** {'🔒 Private' if self.lobby.is_private else '🔓 Public'}\n\n"
-                f"Select a game to begin!"
-            ),
-            color=NEON_PURPLE
-        )
-        
-        # Send game selection panel
-        game_view = MultiplayerGameSelectView(self.bot, self.channel_id, self.lobby)
-        await channel.send(embed=embed, view=game_view)
+        self.votes1 += 1
+        self.voted_users.add(interaction.user.id)
         
         await interaction.followup.send(
-            f"✅ Lobby launched! Check {channel.mention} for game selection.",
+            f"✅ You voted for **{self.option1}**!",
             ephemeral=True
         )
+    
+    @discord.ui.button(label="2️⃣ Option 2", style=discord.ButtonStyle.primary, custom_id="wyr_option2")
+    async def vote_option2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         
-        logger.info(f"✅ Lobby {self.channel_id} launched with {len(self.lobby.players)} players")
-
-
-class PlayerLimitView(discord.ui.View):
-    """View for selecting player limit"""
-    
-    def __init__(self, bot: commands.Bot, channel_id: int, lobby: LobbySession) -> None:
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.channel_id = channel_id
-        self.lobby = lobby
-    
-    @discord.ui.button(label="2 Players", style=discord.ButtonStyle.primary, custom_id="limit_2")
-    async def limit_2(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self.lobby.max_players = 2
-        await interaction.response.send_message("✅ Max players set to **2**", ephemeral=True)
-    
-    @discord.ui.button(label="4 Players", style=discord.ButtonStyle.primary, custom_id="limit_4")
-    async def limit_4(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self.lobby.max_players = 4
-        await interaction.response.send_message("✅ Max players set to **4**", ephemeral=True)
-    
-    @discord.ui.button(label="8 Players", style=discord.ButtonStyle.primary, custom_id="limit_8")
-    async def limit_8(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self.lobby.max_players = 8
-        await interaction.response.send_message("✅ Max players set to **8**", ephemeral=True)
-    
-    @discord.ui.button(label="Unlimited", style=discord.ButtonStyle.primary, custom_id="limit_unlimited")
-    async def limit_unlimited(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self.lobby.max_players = 999
-        await interaction.response.send_message("✅ Max players set to **Unlimited**", ephemeral=True)
-
-
-class InviteFriendsModal(discord.ui.Modal, title="Invite Friends to Lobby"):
-    """Modal for inviting friends"""
-    
-    friend_ids = discord.ui.TextInput(
-        label="Friend Discord IDs (comma-separated)",
-        placeholder="123456789,987654321,etc.",
-        required=False
-    )
-    
-    def __init__(self, bot: commands.Bot, channel_id: int, lobby: LobbySession) -> None:
-        super().__init__()
-        self.bot = bot
-        self.channel_id = channel_id
-        self.lobby = lobby
-    
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            ids_str = self.friend_ids.value
-            if ids_str:
-                ids = [int(x.strip()) for x in ids_str.split(",")]
-                self.lobby.invited_users.update(ids)
-                
-                # Update database
-                from main import DatabasePool
-                async with DatabasePool.pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE game_channels SET invited_users = $1 WHERE channel_id = $2",
-                        list(self.lobby.invited_users),
-                        self.channel_id
-                    )
-                
-                await interaction.response.send_message(
-                    f"✅ **{len(ids)} friends invited!**\n\n"
-                    f"They can now join this private lobby.",
-                    ephemeral=True
-                )
-                logger.info(f"Invited {len(ids)} users to lobby {self.channel_id}")
-            else:
-                await interaction.response.send_message(
-                    "❌ Please provide at least one friend ID",
-                    ephemeral=True
-                )
-        except ValueError:
-            await interaction.response.send_message(
-                "❌ Invalid ID format! Please use comma-separated numeric IDs.",
-                ephemeral=True
-            )
-        except Exception as e:
-            logger.error(f"Error inviting friends: {e}")
-            await interaction.response.send_message(
-                f"❌ Error: {str(e)}",
-                ephemeral=True
-            )
-
-
-class MultiplayerGameSelectView(discord.ui.View):
-    """View for selecting multiplayer games"""
-    
-    def __init__(self, bot: commands.Bot, channel_id: int, lobby: LobbySession) -> None:
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.channel_id = channel_id
-        self.lobby = lobby
-    
-    @discord.ui.button(label="💭 Truth or Dare", style=discord.ButtonStyle.green, custom_id="game_truth_or_dare")
-    async def truth_or_dare(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        game_type, content = await play_truth_or_dare()
-        embed = discord.Embed(
-            title=game_type,
-            description=content,
-            color=NEON_PURPLE
-        )
-        await interaction.response.send_message(embed=embed)
-        self.lobby.current_game = "truth_or_dare"
-        logger.info(f"Started Truth or Dare in lobby {self.channel_id}")
-    
-    @discord.ui.button(label="🤔 Would You Rather", style=discord.ButtonStyle.green, custom_id="game_would_you_rather")
-    async def would_you_rather(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        question, options = await play_would_you_rather()
-        embed = discord.Embed(
-            title="🤔 WOULD YOU RATHER",
-            description=f"{question}\n\n**Options:** {options}",
-            color=NEON_CYAN
-        )
-        await interaction.response.send_message(embed=embed, view=WouldYouRatherVoteView())
-        self.lobby.current_game = "would_you_rather"
-        logger.info(f"Started Would You Rather in lobby {self.channel_id}")
-    
-    @discord.ui.button(label="🏃 Fast Finger Quiz", style=discord.ButtonStyle.green, custom_id="game_fast_finger")
-    async def fast_finger(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        question, answer = await play_fast_finger_quiz()
-        embed = discord.Embed(
-            title="🏃 FAST FINGER QUIZ",
-            description=f"**Question:** {question}\n\n⏱️ Who can answer first?",
-            color=NEON_GREEN
-        )
-        await interaction.response.send_message(embed=embed)
-        self.lobby.current_game = "fast_finger"
-        self.lobby.game_state = {"question": question, "answer": answer}
-        logger.info(f"Started Fast Finger Quiz in lobby {self.channel_id}")
-    
-    @discord.ui.button(label="🔤 Word Wars", style=discord.ButtonStyle.green, custom_id="game_word_wars")
-    async def word_wars(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        question, hint = await play_word_wars()
-        embed = discord.Embed(
-            title="🔤 WORD WARS",
-            description=f"{question}\n\n**Hint:** {hint}",
-            color=NEON_MAGENTA
-        )
-        await interaction.response.send_message(embed=embed)
-        self.lobby.current_game = "word_wars"
-        logger.info(f"Started Word Wars in lobby {self.channel_id}")
-    
-    @discord.ui.button(label="👑 King of the Hill", style=discord.ButtonStyle.green, custom_id="game_king_hill")
-    async def king_of_hill(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        result = await play_king_of_the_hill()
-        embed = discord.Embed(
-            title="👑 KING OF THE HILL",
-            description=result,
-            color=NEON_ORANGE
-        )
-        embed.add_field(name="Players", value=", ".join([f"<@{p}>" for p in self.lobby.players]), inline=False)
-        await interaction.response.send_message(embed=embed, view=KingOfHillView(self.lobby.players))
-        self.lobby.current_game = "king_of_hill"
-        logger.info(f"Started King of the Hill in lobby {self.channel_id}")
-    
-    @discord.ui.button(label="🎨 Quick Draw", style=discord.ButtonStyle.green, custom_id="game_quick_draw")
-    async def quick_draw(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        prompt, instructions = await play_quick_draw_voting()
-        embed = discord.Embed(
-            title="🎨 QUICK DRAW VOTING",
-            description=f"**Draw:** {prompt}\n\n{instructions}",
-            color=NEON_CYAN
-        )
-        await interaction.response.send_message(embed=embed)
-        self.lobby.current_game = "quick_draw"
-        logger.info(f"Started Quick Draw in lobby {self.channel_id}")
-    
-    @discord.ui.button(label="🎭 Emoji Story", style=discord.ButtonStyle.green, custom_id="game_emoji_story")
-    async def emoji_story(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        result = await play_emoji_story()
-        embed = discord.Embed(
-            title="🎭 EMOJI STORY",
-            description=result,
-            color=NEON_PURPLE
-        )
-        await interaction.response.send_message(embed=embed)
-        self.lobby.current_game = "emoji_story"
-        logger.info(f"Started Emoji Story in lobby {self.channel_id}")
-    
-    @discord.ui.button(label="🧠 Trivia Deathmatch", style=discord.ButtonStyle.green, custom_id="game_trivia_death")
-    async def trivia_deathmatch(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        question, answer, options = await play_trivia_deathmatch()
-        embed = discord.Embed(
-            title="🧠 TRIVIA DEATHMATCH",
-            description=f"**Question:** {question}",
-            color=NEON_GREEN
-        )
-        embed.add_field(name="Players", value=", ".join([f"<@{p}>" for p in self.lobby.players]), inline=False)
-        await interaction.response.send_message(embed=embed, view=TriviaDeathmatchView(options, answer))
-        self.lobby.current_game = "trivia_deathmatch"
-        logger.info(f"Started Trivia Deathmatch in lobby {self.channel_id}")
-    
-    @discord.ui.button(label="⚡ Rapid Riddles", style=discord.ButtonStyle.green, custom_id="game_rapid_riddles")
-    async def rapid_riddles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        riddles = await play_rapid_fire_riddles()
-        riddle_text = "\n\n".join([f"**{i+1}.** {r[0]}\n*Answer: {r[1]}*" for i, r in enumerate(riddles)])
-        embed = discord.Embed(
-            title="⚡ RAPID FIRE RIDDLES",
-            description=riddle_text,
-            color=NEON_MAGENTA
-        )
-        await interaction.response.send_message(embed=embed)
-        self.lobby.current_game = "rapid_riddles"
-        logger.info(f"Started Rapid Riddles in lobby {self.channel_id}")
-
-
-class WouldYouRatherVoteView(discord.ui.View):
-    """View for Would You Rather voting"""
-    
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
-        self.option1_votes = 0
-        self.option2_votes = 0
-    
-    @discord.ui.button(label="Option 1", style=discord.ButtonStyle.primary, custom_id="wyr_option1")
-    async def option1(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self.option1_votes += 1
-        await interaction.response.send_message(
-            f"✅ Voted for Option 1!\n\n📊 Current votes: Option 1 ({self.option1_votes}) vs Option 2 ({self.option2_votes})",
-            ephemeral=True
-        )
-    
-    @discord.ui.button(label="Option 2", style=discord.ButtonStyle.primary, custom_id="wyr_option2")
-    async def option2(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self.option2_votes += 1
-        await interaction.response.send_message(
-            f"✅ Voted for Option 2!\n\n📊 Current votes: Option 1 ({self.option1_votes}) vs Option 2 ({self.option2_votes})",
-            ephemeral=True
-        )
-
-
-class KingOfHillView(discord.ui.View):
-    """View for King of the Hill game"""
-    
-    def __init__(self, players: List[int]) -> None:
-        super().__init__(timeout=None)
-        self.players = players.copy()
-        self.current_king = players[0] if players else None
-    
-    @discord.ui.button(label="⚔️ Challenge", style=discord.ButtonStyle.danger, custom_id="challenge_king")
-    async def challenge(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if interaction.user.id == self.current_king:
-            await interaction.response.send_message("❌ You can't challenge yourself!", ephemeral=True)
+        if interaction.user.id in self.voted_users:
+            await interaction.followup.send("❌ You already voted!", ephemeral=True)
             return
         
-        challenger_wins = random.choice([True, False])
-        if challenger_wins:
-            old_king = self.current_king
-            self.current_king = interaction.user.id
-            embed = discord.Embed(
-                title="⚔️ CHALLENGE WON!",
-                description=f"<@{interaction.user.id}> is the new **KING OF THE HILL**!\n\n"
-                           f"Dethroned: <@{old_king}>",
-                color=NEON_GREEN
-            )
-        else:
-            embed = discord.Embed(
-                title="❌ CHALLENGE FAILED!",
-                description=f"<@{self.current_king}> defended the hill!",
-                color=NEON_ORANGE
-            )
+        self.votes2 += 1
+        self.voted_users.add(interaction.user.id)
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(
+            f"✅ You voted for **{self.option2}**!",
+            ephemeral=True
+        )
 
+class FastFingerView(discord.ui.View):
+    """Fast Finger Quiz answer selection"""
+    
+    def __init__(self, correct_answer: str, scores: Dict[int, int]):
+        super().__init__(timeout=None)
+        self.correct_answer = correct_answer
+        self.scores = scores
+        self.answered_users: Set[int] = set()
+        self.answered = False
+    
+    @discord.ui.button(label="Option 1", style=discord.ButtonStyle.primary, custom_id="ff_opt1")
+    async def option1(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.answer_question(interaction)
+    
+    @discord.ui.button(label="Option 2", style=discord.ButtonStyle.primary, custom_id="ff_opt2")
+    async def option2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.answer_question(interaction)
+    
+    @discord.ui.button(label="Option 3", style=discord.ButtonStyle.primary, custom_id="ff_opt3")
+    async def option3(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.answer_question(interaction)
+    
+    async def answer_question(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        if interaction.user.id in self.answered_users:
+            await interaction.followup.send("❌ Already answered!", ephemeral=True)
+            return
+        
+        is_correct = interaction.data["custom_id"].split("_")[2] in ["opt" + str(i) for i in range(1, 4)]
+        
+        if is_correct and not self.answered:
+            self.scores[interaction.user.id] += 1
+            self.answered = True
+            await interaction.followup.send("✅ Correct! Point awarded!", ephemeral=True)
+        elif self.answered:
+            await interaction.followup.send("❌ Someone already answered!", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Wrong answer!", ephemeral=True)
+        
+        self.answered_users.add(interaction.user.id)
 
 class TriviaDeathmatchView(discord.ui.View):
-    """View for Trivia Deathmatch game"""
+    """Trivia Deathmatch answer selection"""
     
-    def __init__(self, options: List[str], correct_answer: str) -> None:
+    def __init__(self, correct_answer: str, scores: Dict[int, int]):
         super().__init__(timeout=None)
-        self.options = options
         self.correct_answer = correct_answer
-        
-        for option in options:
-            self.add_item(TriviaDeathmatchButton(option, correct_answer))
-
-
-class TriviaDeathmatchButton(discord.ui.Button):
-    def __init__(self, option: str, correct_answer: str):
-        super().__init__(label=option, style=discord.ButtonStyle.primary, custom_id=f"trivia_death_{option}")
-        self.option = option
-        self.correct_answer = correct_answer
+        self.scores = scores
+        self.answered_users: Set[int] = set()
+        self.answered = False
     
-    async def callback(self, interaction: discord.Interaction) -> None:
-        if self.option == self.correct_answer:
-            await interaction.response.send_message(
-                f"✅ **<@{interaction.user.id}> WINS! CORRECT!**",
-                ephemeral=False
-            )
+    @discord.ui.button(label="1", style=discord.ButtonStyle.primary, custom_id="td_1")
+    async def option1(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.answer_trivia(interaction)
+    
+    @discord.ui.button(label="2", style=discord.ButtonStyle.primary, custom_id="td_2")
+    async def option2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.answer_trivia(interaction)
+    
+    @discord.ui.button(label="3", style=discord.ButtonStyle.primary, custom_id="td_3")
+    async def option3(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.answer_trivia(interaction)
+    
+    async def answer_trivia(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        if interaction.user.id in self.answered_users:
+            return
+        
+        if not self.answered:
+            self.scores[interaction.user.id] += 1
+            self.answered = True
+            await interaction.followup.send("✅ Point awarded!", ephemeral=True)
         else:
+            await interaction.followup.send("❌ Someone answered first!", ephemeral=True)
+        
+        self.answered_users.add(interaction.user.id)
+
+class RiddleRaceView(discord.ui.View):
+    """Riddle Race answer selection"""
+    
+    def __init__(self, correct_answer: str, scores: Dict[int, int]):
+        super().__init__(timeout=None)
+        self.correct_answer = correct_answer
+        self.scores = scores
+        self.answered_users: Set[int] = set()
+        self.answered = False
+    
+    async def process_answer(self, interaction: discord.Interaction, user_answer: str):
+        await interaction.response.defer(ephemeral=True)
+        
+        if interaction.user.id in self.answered_users:
+            return
+        
+        is_correct = user_answer.lower() in self.correct_answer.lower()
+        
+        if is_correct and not self.answered:
+            self.scores[interaction.user.id] += 1
+            self.answered = True
+            await interaction.followup.send("✅ Correct! Point awarded!", ephemeral=True)
+        elif self.answered:
+            await interaction.followup.send("❌ Someone answered first!", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Wrong answer!", ephemeral=True)
+        
+        self.answered_users.add(interaction.user.id)
+
+class LobbyConfigurationView(discord.ui.View):
+    """Lobby configuration dashboard"""
+    
+    def __init__(self, lobby: LobbySession, bot):
+        super().__init__(timeout=None)
+        self.lobby = lobby
+        self.bot = bot
+    
+    @discord.ui.button(label="👥 2 Players", style=discord.ButtonStyle.primary, custom_id="config_2players")
+    async def set_2_players(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        self.lobby.max_players = 2
+        await interaction.followup.send("✅ Lobby set for 2 players!", ephemeral=True)
+    
+    @discord.ui.button(label="👥 4 Players", style=discord.ButtonStyle.primary, custom_id="config_4players")
+    async def set_4_players(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        self.lobby.max_players = 4
+        await interaction.followup.send("✅ Lobby set for 4 players!", ephemeral=True)
+    
+    @discord.ui.button(label="👥 8 Players", style=discord.ButtonStyle.primary, custom_id="config_8players")
+    async def set_8_players(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        self.lobby.max_players = 8
+        await interaction.followup.send("✅ Lobby set for 8 players!", ephemeral=True)
+    
+    @discord.ui.button(label="👥 Unlimited", style=discord.ButtonStyle.primary, custom_id="config_unlimited")
+    async def set_unlimited(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        self.lobby.max_players = 999
+        await interaction.followup.send("✅ Lobby set for unlimited players!", ephemeral=True)
+    
+    @discord.ui.button(label="🔓 Public", style=discord.ButtonStyle.success, custom_id="config_public")
+    async def set_public(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        self.lobby.is_private = False
+        await interaction.followup.send("✅ Lobby set to Public!", ephemeral=True)
+    
+    @discord.ui.button(label="🔒 Private", style=discord.ButtonStyle.danger, custom_id="config_private")
+    async def set_private(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        self.lobby.is_private = True
+        await interaction.followup.send("✅ Lobby set to Private! Use /invite to add friends.", ephemeral=True)
+    
+    @discord.ui.button(label="➕ Invite Friend", style=discord.ButtonStyle.secondary, custom_id="config_invite")
+    async def invite_friend(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(InviteFriendModal(self.lobby))
+
+class InviteFriendModal(discord.ui.Modal, title="Invite Friend to Lobby"):
+    """Modal for inviting friends"""
+    
+    user_id = discord.ui.TextInput(label="Friend's User ID", placeholder="Enter Discord User ID")
+    
+    def __init__(self, lobby: LobbySession):
+        super().__init__()
+        self.lobby = lobby
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            friend_id = int(self.user_id.value)
+            self.lobby.invited_users.add(friend_id)
             await interaction.response.send_message(
-                f"❌ Wrong! The answer was **{self.correct_answer}**",
+                f"✅ User {friend_id} invited to the lobby!",
+                ephemeral=True
+            )
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Invalid User ID!",
                 ephemeral=True
             )
 
-# ============================================================================
-# AUTO-CLEANUP FOR LOBBIES
-# ============================================================================
-
-async def auto_cleanup_lobby(bot: commands.Bot, channel_id: int, lobby_id: str, timeout_seconds: int = 1800) -> None:
-    """Automatically delete lobby after inactivity timeout"""
-    try:
-        await asyncio.sleep(timeout_seconds)
+class MultiCreationView(discord.ui.View):
+    """Main button to create multiplayer lobby"""
+    
+    def __init__(self):
+        super().__init__(timeout=None)
+    
+    @discord.ui.button(label="⚔️ Host Matchmaking Lobby", style=discord.ButtonStyle.danger, custom_id="multi_create_lobby")
+    async def create_multiplayer_lobby(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Create a multiplayer gaming lobby"""
         
-        channel = bot.get_channel(channel_id)
-        if channel:
-            await channel.delete(reason="Multiplayer lobby expired (inactivity timeout)")
-            logger.info(f"🗑️ Cleaned up lobby channel: {channel_id}")
+        await interaction.response.defer(ephemeral=True)
+        
+        user_id = interaction.user.id
+        guild_id = interaction.guild.id
+        
+        try:
+            logger.info(f"⚔️ User {interaction.user} ({user_id}) creating multiplayer lobby in guild {guild_id}")
             
-            # Remove from database
-            from main import DatabasePool
-            async with DatabasePool.pool.acquire() as conn:
+            category_name = "🎮 Gaming Hub"
+            category = discord.utils.get(interaction.guild.categories, name=category_name)
+            
+            if not category:
+                logger.error(f"❌ Gaming Hub category not found in guild {guild_id}")
+                await interaction.followup.send(
+                    "❌ Gaming Hub category not found! Please run `/setup_gaming_hub` first.",
+                    ephemeral=True
+                )
+                return
+            
+            channel_name = f"🎮-{interaction.user.name}-lobby"
+            
+            overwrites = {
+                interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+                interaction.client.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+            }
+            
+            multi_channel = await interaction.guild.create_text_channel(
+                channel_name,
+                category=category,
+                overwrites=overwrites,
+                topic=f"Multiplayer lobby hosted by {interaction.user.name}"
+            )
+            
+            logger.info(f"✅ Created multiplayer channel {multi_channel.id} for user {user_id}")
+            
+            lobby = LobbySession(user_id, multi_channel.id, guild_id)
+            
+            async with interaction.client.db_pool.acquire() as conn:
                 await conn.execute(
-                    "DELETE FROM game_channels WHERE channel_id = $1",
-                    channel_id
+                    """
+                    INSERT INTO active_lobbies (guild_id, channel_id, host_id, max_players, is_private, last_activity)
+                    VALUES ($1, $2, $3, $4, $5, NOW())
+                    """,
+                    guild_id, multi_channel.id, user_id, lobby.max_players, lobby.is_private
                 )
             
-            # Remove from active lobbies
-            if channel_id in ACTIVE_LOBBIES:
-                del ACTIVE_LOBBIES[channel_id]
-    except Exception as e:
-        logger.error(f"Error in lobby cleanup: {e}")
+            logger.info(f"📊 Recorded multiplayer lobby {multi_channel.id} in database")
+            
+            config_embed = discord.Embed(
+                title="⚔️ LOBBY CONFIGURATION",
+                description="Configure your lobby before going live!",
+                color=0xFF1493
+            )
+            config_embed.add_field(name="👥 Player Limit", value="Click button to set (default: 4)", inline=False)
+            config_embed.add_field(name="🔓 Privacy", value="Choose Public or Private (default: Public)", inline=False)
+            config_embed.add_field(name="➕ Invites", value="Add friends if Private", inline=False)
+            config_embed.set_footer(text="Configure below, then select a game!")
+            
+            await multi_channel.send(embed=config_embed, view=LobbyConfigurationView(lobby, interaction.client))
+            
+            games_embed = discord.Embed(
+                title="🎮 GAME SELECTION",
+                description="Choose a multiplayer game to play!",
+                color=0xFF1493
+            )
+            games_embed.add_field(name="Available Games", value="10 unique multiplayer experiences", inline=False)
+            games_embed.set_footer(text="Games are designed for group play!")
+            
+            await multi_channel.send(embed=games_embed, view=MultiGameView(lobby, interaction.client))
+            
+            logger.info(f"✅ Lobby interface deployed to channel {multi_channel.id}")
+            
+            await interaction.followup.send(
+                f"✅ Multiplayer lobby created! Check {multi_channel.mention}",
+                ephemeral=True
+            )
+        
+        except Exception as e:
+            logger.error(f"❌ Failed to create multiplayer lobby: {e}", exc_info=True)
+            await interaction.followup.send(
+                f"❌ Failed to create multiplayer lobby: {str(e)}",
+                ephemeral=True
+            )
 
-# ============================================================================
-# COG REGISTRATION
-# ============================================================================
-
-class MultiplayerLobbyManagerCog(commands.Cog):
+class MultiManager(commands.Cog):
     """Multiplayer Lobby Manager Cog"""
     
-    def __init__(self, bot: commands.Bot) -> None:
+    def __init__(self, bot):
         self.bot = bot
+        self.active_lobbies: Dict[int, LobbySession] = {}
+    
+    async def cog_load(self):
+        logger.info("✅ MultiManager cog loaded successfully")
 
-async def setup(bot: commands.Bot) -> None:
-    """Setup the cog"""
-    await bot.add_cog(MultiplayerLobbyManagerCog(bot))
-    logger.info("✅ Multiplayer Lobby Manager Cog loaded")
+async def setup(bot):
+    """Setup function for the cog"""
+    await bot.add_cog(MultiManager(bot))
+    logger.info("✅ MultiManager cog registered")
