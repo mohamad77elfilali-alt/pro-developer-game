@@ -2,6 +2,9 @@ import discord
 from discord.ext import commands
 import os
 import asyncio
+# استدعاء دالة التهيئة لقاعدة البيانات
+        import database
+        await database.init_db()
 
 # إعداد النوايا (Intents) بصلاحيات كاملة للتعامل مع القنوات والرتب والأعضاء
 intents = discord.Intents.all()
